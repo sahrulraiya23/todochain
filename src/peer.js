@@ -1,8 +1,16 @@
-// peer.js
 import Peer from 'peerjs';
 
-export const createPeer = () => {
-  // Opsi konfigurasi PeerJS
+// Create a peer connection with username as ID
+export const createPeer = (username) => {
+  if (!username || username.trim() === '') {
+    console.error("Username is required");
+    return null;
+  }
+  
+  // Sanitize username to ensure it's valid for PeerJS ID (alphanumeric)
+  const sanitizedUsername = username.trim().replace(/[^a-zA-Z0-9]/g, '-');
+  
+  // PeerJS configuration options
   const peerOptions = {
     debug: 3, // 0 = no logs, 3 = all logs
     config: {
@@ -13,22 +21,17 @@ export const createPeer = () => {
     }
   };
 
-  // Mencoba membuat koneksi peer baru
+  // Try creating a new peer connection with the username
   try {
-    const peer = new Peer(generateRandomId(), peerOptions);
+    const peer = new Peer(sanitizedUsername, peerOptions);
     
-    // Log untuk debugging
-    console.log("PeerJS instance created");
+    // Log for debugging
+    console.log(`PeerJS instance created with username: ${sanitizedUsername}`);
     
     return peer;
   } catch (error) {
     console.error("Error creating PeerJS instance:", error);
-    alert("Terjadi kesalahan saat membuat koneksi P2P. Silakan muat ulang halaman.");
+    alert("Terjadi kesalahan saat membuat koneksi P2P. Silakan coba dengan username lain atau muat ulang halaman.");
     return null;
   }
 };
-
-// Fungsi untuk menghasilkan ID acak jika diperlukan
-function generateRandomId() {
-  return 'todochain-' + Math.random().toString(36).substr(2, 9);
-}
