@@ -15,13 +15,12 @@ function App() {
   const [blocks, setBlocks] = useState([]);
   const [chain, setChain] = useState(new Blockchain());
   
-  // P2P Connection States
+  // P2P Connection States - MODIFIED FOR MULTIPLE CONNECTIONS
   const [peer, setPeer] = useState(null);
-  const [conn, setConn] = useState(null);
+  const [connections, setConnections] = useState({}); // Object to store multiple connections
   const [connectedUsers, setConnectedUsers] = useState([]);
   const [connectionStatus, setConnectionStatus] = useState("Tidak terhubung");
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectedUsername, setConnectedUsername] = useState("");
+  const [isConnecting, setIsConnecting] = useState(false);
   
   // Mining States
   const [isMining, setIsMining] = useState(false);
@@ -57,13 +56,14 @@ function App() {
 
   // Handle Logout
   const handleLogout = () => {
-    if (conn) {
+    // Close all connections
+    Object.values(connections).forEach(conn => {
       try {
         conn.close();
       } catch (error) {
         console.error("Error closing connection:", error);
       }
-    }
+    });
     
     if (peer) {
       try {
@@ -75,57 +75,20 @@ function App() {
     
     setIsLoggedIn(false);
     setPeer(null);
-    setConn(null);
+    setConnections({});
     setUsername("");
     setConnectedUsers([]);
     setConnectionStatus("Tidak terhubung");
-    setIsConnected(false);
-    setConnectedUsername("");
   };
 
-  // Set up peer event listeners
+  // Set up peer event listeners - MODIFIED FOR MULTIPLE CONNECTIONS
   const setupPeerListeners = (p) => {
     p.on("open", (id) => {
       console.log("Logged in as:", id);
     });
 
     p.on("connection", (c) => {
-      c.on("open", () => {
-        console.log("Peer connected:", c.peer);
-        setConn(c);
-        setIsConnected(true);
-        setConnectionStatus(`Terhubung dengan ${c.peer}`);
-        setConnectedUsername(c.peer);
-        
-        // Add to connected users list if not already there
-        setConnectedUsers(prev => {
-          if (!prev.includes(c.peer)) {
-            return [...prev, c.peer];
-          }
-          return prev;
-        });
-      });
-      
-      c.on("close", () => {
-        console.log("Connection closed:", c.peer);
-        setConnectionStatus("Tidak terhubung");
-        setIsConnected(false);
-        setConnectedUsername("");
-        
-        // Remove from connected users list
-        setConnectedUsers(prev => prev.filter(user => user !== c.peer));
-      });
-      
-      c.on("error", (err) => {
-        console.error("Connection error:", err);
-        setConnectionStatus("Error koneksi");
-        setIsConnected(false);
-        setConnectedUsername("");
-      });
-      
-      c.on("data", (data) => {
-        handleIncomingData(data);
-      });
+      setupConnectionListeners(c);
     });
 
     p.on("error", (err) => {
@@ -133,104 +96,210 @@ function App() {
     });
   };
 
-  // Handle incoming data from peers
-  const handleIncomingData = (data) => {
-    if (data.type === "block") {
-      // Handle new task block
-      try {
-        const newBlock = chain.addBlock(data.data);
-        setBlocks([...chain.chain]);
-      } catch (error) {
-        console.error("Error adding received block:", error);
-      }
-    } else if (data.type === "complete-task") {
-      // Handle task completion
-      try {
-        chain.completeTask(data.blockIndex, data.completedBy);
-        setBlocks([...chain.chain]);
-      } catch (error) {
-        console.error("Error completing task:", error);
-      }
-    } else if (data.type === "sync-request") {
-      // Send blockchain to requesting peer
-      if (conn) {
-        conn.send({ type: "sync-response", data: chain.chain });
-      }
-    } else if (data.type === "sync-response") {
-      // Validate and update local blockchain if needed
-      if (chain.isValidChain(data.data) && data.data.length > chain.chain.length) {
-        chain.chain = data.data;
-        setBlocks([...chain.chain]);
-      }
-    }
+  // Set up connection listeners - NEW FUNCTION TO HANDLE CONNECTION EVENTS
+  const setupConnectionListeners = (c) => {
+    c.on("open", () => {
+      console.log("Peer connected:", c.peer);
+      
+      // Store the connection in our connections object
+      setConnections(prev => ({
+        ...prev,
+        [c.peer]: c
+      }));
+      
+      // Update the UI and connected users list
+      updateConnectionStatus();
+      
+      // Add to connected users list if not already there
+      setConnectedUsers(prev => {
+        if (!prev.includes(c.peer)) {
+          return [...prev, c.peer];
+        }
+        return prev;
+      });
+      
+      // Sync blockchains
+      c.send({ type: "sync-request" });
+    });
+    
+    c.on("close", () => {
+      console.log("Connection closed:", c.peer);
+      
+      // Remove the connection from our connections object
+      setConnections(prev => {
+        const newConnections = { ...prev };
+        delete newConnections[c.peer];
+        return newConnections;
+      });
+      
+      // Update the UI and connected users list
+      updateConnectionStatus();
+      
+      // Remove from connected users list
+      setConnectedUsers(prev => prev.filter(user => user !== c.peer));
+    });
+    
+    c.on("error", (err) => {
+      console.error("Connection error:", err);
+      
+      // Remove the connection from our connections object
+      setConnections(prev => {
+        const newConnections = { ...prev };
+        delete newConnections[c.peer];
+        return newConnections;
+      });
+      
+      // Update the UI
+      updateConnectionStatus();
+    });
+    
+    c.on("data", (data) => {
+      handleIncomingData(data, c.peer);
+    });
   };
 
-  // Connect to a peer by username
+  // Helper function to update connection status - NEW FUNCTION
+  const updateConnectionStatus = () => {
+    setConnections(prev => {
+      const connectedCount = Object.keys(prev).length;
+      
+      if (connectedCount === 0) {
+        setConnectionStatus("Tidak terhubung");
+      } else if (connectedCount === 1) {
+        const peerId = Object.keys(prev)[0];
+        setConnectionStatus(`Terhubung dengan ${peerId}`);
+      } else {
+        setConnectionStatus(`Terhubung dengan ${connectedCount} pengguna`);
+      }
+      
+      return prev;
+    });
+  };
+
+  // Handle incoming data from peers - MODIFIED TO INCLUDE SENDER INFO
+// Updated handleIncomingData function to handle reset messages
+const handleIncomingData = (data, sender) => {
+  if (data.type === "block") {
+    // Handle new task block
+    try {
+      const newBlock = chain.addBlock(data.data);
+      setBlocks([...chain.chain]);
+      
+      // Forward to other connected peers (except the sender)
+      broadcastToOtherPeers(data, sender);
+    } catch (error) {
+      console.error("Error adding received block:", error);
+    }
+  } else if (data.type === "complete-task") {
+    // Handle task completion
+    try {
+      chain.completeTask(data.blockIndex, data.completedBy);
+      setBlocks([...chain.chain]);
+      
+      // Forward to other connected peers (except the sender)
+      broadcastToOtherPeers(data, sender);
+    } catch (error) {
+      console.error("Error completing task:", error);
+    }
+  } else if (data.type === "sync-request") {
+    // Send blockchain to requesting peer
+    const connection = connections[sender];
+    if (connection) {
+      connection.send({ type: "sync-response", data: chain.chain });
+    }
+  } else if (data.type === "sync-response") {
+    // Validate and update local blockchain if needed
+    if (chain.isValidChain(data.data) && data.data.length > chain.chain.length) {
+      chain.chain = data.data;
+      setBlocks([...chain.chain]);
+    }
+  } else if (data.type === "reset-blockchain") {
+    // Handle blockchain reset request
+    console.log(`Received reset blockchain request from ${sender}`);
+    
+    // Create new blockchain
+    const newChain = new Blockchain();
+    
+    // Update local state
+    setBlocks([...newChain.chain]);
+    setChain(newChain);
+    setPendingTask(null);
+    
+    // Show notification
+    const resetNotification = `Blockchain direset oleh ${data.initiator} 🔄`;
+    alert(resetNotification);
+    
+    // Forward reset message to other connected peers (except the sender)
+    // This ensures the reset propagates through the entire network
+    broadcastToOtherPeers(data, sender);
+  }
+};
+
+  // Broadcast data to all peers except the sender - NEW FUNCTION
+  const broadcastToOtherPeers = (data, excludeUser) => {
+    Object.entries(connections).forEach(([peerId, connection]) => {
+      if (peerId !== excludeUser) {
+        try {
+          connection.send(data);
+        } catch (error) {
+          console.error(`Error sending data to ${peerId}:`, error);
+        }
+      }
+    });
+  };
+
+  // Connect to a peer by username - MODIFIED FOR MULTIPLE CONNECTIONS
   const connectToUser = () => {
     if (assigneeUsername.trim() !== "" && assigneeUsername !== username) {
+      // Don't connect if already connected
+      if (connections[assigneeUsername]) {
+        alert(`Sudah terhubung dengan ${assigneeUsername}`);
+        return;
+      }
+      
       try {
+        setIsConnecting(true);
         setConnectionStatus(`Menghubungkan ke ${assigneeUsername}...`);
         
         const connection = peer.connect(assigneeUsername);
         
-        connection.on("open", () => {
-          console.log("Connected to:", assigneeUsername);
-          setConn(connection);
-          setIsConnected(true);
-          setConnectionStatus(`Terhubung dengan ${assigneeUsername}`);
-          setConnectedUsername(assigneeUsername);
-          
-          // Add to connected users list
-          setConnectedUsers(prev => {
-            if (!prev.includes(assigneeUsername)) {
-              return [...prev, assigneeUsername];
-            }
-            return prev;
-          });
-          
-          // Sync blockchains
-          connection.send({ type: "sync-request" });
-        });
+        // Set up listeners for the new connection
+        setupConnectionListeners(connection);
         
-        connection.on("close", () => {
-          console.log("Connection closed");
-          setConnectionStatus("Tidak terhubung");
-          setIsConnected(false);
-          setConnectedUsername("");
-          
-          // Remove from connected users
-          setConnectedUsers(prev => prev.filter(user => user !== assigneeUsername));
-        });
-        
-        connection.on("error", (err) => {
-          console.error("Connection error:", err);
-          setConnectionStatus("Error koneksi");
-          setIsConnected(false);
-          setConnectedUsername("");
-        });
-        
-        connection.on("data", (data) => {
-          handleIncomingData(data);
-        });
+        // Reset the connecting state after some time
+        setTimeout(() => {
+          setIsConnecting(false);
+        }, 5000);
       } catch (error) {
         console.error("Error connecting to peer:", error);
         setConnectionStatus("Gagal terhubung");
+        setIsConnecting(false);
       }
     }
   };
 
-  // Disconnect from current peer
-  const disconnectFromUser = () => {
-    if (conn) {
+  // Disconnect from a specific user - NEW FUNCTION
+  const disconnectFromUser = (userToDisconnect) => {
+    const connection = connections[userToDisconnect];
+    if (connection) {
       try {
-        conn.close();
+        connection.close();
       } catch (error) {
-        console.error("Error closing connection:", error);
+        console.error(`Error closing connection to ${userToDisconnect}:`, error);
       }
-      setConn(null);
-      setConnectionStatus("Tidak terhubung");
-      setIsConnected(false);
-      setConnectedUsername("");
+      
+      // Remove the connection from our connections object
+      setConnections(prev => {
+        const newConnections = { ...prev };
+        delete newConnections[userToDisconnect];
+        return newConnections;
+      });
+      
+      // Update the UI
+      updateConnectionStatus();
+      
+      // Remove from connected users list
+      setConnectedUsers(prev => prev.filter(user => user !== userToDisconnect));
     }
   };
 
@@ -254,7 +323,7 @@ function App() {
     }
   };
 
-  // Mine a new task block
+  // Mine a new task block - MODIFIED TO BROADCAST TO ALL PEERS
   const mineTaskBlock = () => {
     if (pendingTask) {
       setIsMining(true);
@@ -271,10 +340,14 @@ function App() {
           const newBlock = chain.addBlock(pendingTask);
           setBlocks([...chain.chain]);
           
-          // Send to connected peer if this is a task for them
-          if (conn && pendingTask.assignedTo === connectedUsername) {
-            conn.send({ type: "block", data: pendingTask });
+          // Send to the specific peer if this is a task for them
+          const targetConnection = connections[pendingTask.assignedTo];
+          if (targetConnection) {
+            targetConnection.send({ type: "block", data: pendingTask });
           }
+          
+          // You might also want to broadcast to all other peers for better synchronization
+          broadcastToOtherPeers({ type: "block", data: pendingTask }, pendingTask.assignedTo);
           
           // Reset pending task
           setPendingTask(null);
@@ -290,7 +363,7 @@ function App() {
     }
   };
 
-  // Mark a task as completed
+  // Mark a task as completed - MODIFIED TO BROADCAST TO ALL PEERS
   const completeTask = (blockIndex) => {
     try {
       const block = chain.chain[blockIndex];
@@ -311,14 +384,22 @@ function App() {
       const completionBlock = chain.completeTask(blockIndex, username);
       setBlocks([...chain.chain]);
       
-      // Notify the assigner if connected
-      if (conn && block.data.assignedBy === connectedUsername) {
-        conn.send({ 
+      // Send update to the task creator if connected
+      const creatorConnection = connections[block.data.assignedBy];
+      if (creatorConnection) {
+        creatorConnection.send({ 
           type: "complete-task", 
           blockIndex: blockIndex,
           completedBy: username
         });
       }
+      
+      // Broadcast to all other connected peers for better synchronization
+      broadcastToOtherPeers({ 
+        type: "complete-task", 
+        blockIndex: blockIndex,
+        completedBy: username
+      }, block.data.assignedBy);
       
       alert("Tugas berhasil ditandai sebagai selesai!");
     } catch (error) {
@@ -327,13 +408,64 @@ function App() {
     }
   };
 
-  // Reset the blockchain
-  const resetBlockchain = () => {
-    const newChain = new Blockchain();
-    setBlocks([...newChain.chain]);
-    setChain(newChain);
-    setPendingTask(null);
+  // Synchronize blockchain with all peers - NEW FUNCTION
+  const syncWithAllPeers = () => {
+    if (Object.keys(connections).length === 0) {
+      alert("Tidak ada koneksi peer aktif untuk sinkronisasi");
+      return;
+    }
+    
+    Object.values(connections).forEach(connection => {
+      try {
+        connection.send({ type: "sync-request" });
+      } catch (error) {
+        console.error(`Error syncing with peer ${connection.peer}:`, error);
+      }
+    });
+    
+    alert("Permintaan sinkronisasi dikirim ke semua peers");
   };
+
+  // Reset the blockchain
+// Enhanced resetBlockchain function that propagates reset to all connected peers
+const resetBlockchain = () => {
+  // Ask for confirmation before resetting
+  const confirmReset = window.confirm(
+    "Apakah Anda yakin ingin mereset blockchain?\n\nIni akan mereset blockchain untuk semua user yang terhubung."
+  );
+
+  if (!confirmReset) {
+    return;
+  }
+
+  // Create new blockchain
+  const newChain = new Blockchain();
+  
+  // Update local state
+  setBlocks([...newChain.chain]);
+  setChain(newChain);
+  setPendingTask(null);
+  
+  // Create reset message to broadcast to all peers
+  const resetMessage = {
+    type: "reset-blockchain",
+    timestamp: new Date().toLocaleString(),
+    initiator: username
+  };
+  
+  // Broadcast reset message to all connected peers
+  Object.values(connections).forEach(connection => {
+    try {
+      connection.send(resetMessage);
+      console.log(`Sent reset request to: ${connection.peer}`);
+    } catch (error) {
+      console.error(`Error sending reset to ${connection.peer}:`, error);
+    }
+  });
+  
+  // Show success message
+  alert("Blockchain berhasil direset! 🔄");
+};
 
   // Print blockchain as JSON
   const printJSON = () => {
@@ -356,7 +488,7 @@ function App() {
     alert("JSON berhasil diunduh 📦");
   };
 
-  // Show active peer connections
+  // Show active peer connections - MODIFIED TO SHOW ALL CONNECTIONS
   const showActivePeers = () => {
     if (!peer) {
       alert("Peer belum diinisialisasi");
@@ -371,7 +503,7 @@ function App() {
     let peerInfo = "Daftar User Aktif:\n\n";
     connectedUsers.forEach((user, index) => {
       peerInfo += `${index + 1}. Username: ${user}\n`;
-      peerInfo += `   Status: ${connectedUsername === user ? 'Terhubung' : 'Tidak terhubung'}\n\n`;
+      peerInfo += `   Status: ${connections[user] ? 'Terhubung' : 'Tidak terhubung'}\n\n`;
     });
     
     alert(peerInfo);
@@ -391,7 +523,7 @@ function App() {
             <svg xmlns="http://www.w3.org/2000/svg" style={{ height: "32px", width: "32px" }} viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-1-11a1 1 0 112 0v3.586l2.707 2.707a1 1 0 01-1.414 1.414l-3-3a1 1 0 01-.293-.707V7z" clipRule="evenodd" />
             </svg>
-            <h1 style={{ fontSize: "1.5rem", fontWeight: "bold" }}>ToDoChain P2P Username 🧠</h1>
+            <h1 style={{ fontSize: "1.5rem", fontWeight: "bold" }}>ToDoChain P2P Multi-User 🧠</h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
             {isLoggedIn && (
@@ -466,14 +598,14 @@ function App() {
         ) : (
           /* Main Application (after login) */
           <>
-            {/* Connection Section */}
+            {/* Connection Section - MODIFIED TO SHOW AND MANAGE MULTIPLE CONNECTIONS */}
             <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)", marginBottom: "24px" }}>
               <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", color: "#1e40af", marginBottom: "16px" }}>Koneksi User</h2>
               
               {/* Connection Status */}
               <div style={{ 
-                backgroundColor: isConnected ? "#dcfce7" : connectionStatus === "Tidak terhubung" ? "#fee2e2" : "#fef3c7", 
-                color: isConnected ? "#166534" : connectionStatus === "Tidak terhubung" ? "#991b1b" : "#92400e",
+                backgroundColor: Object.keys(connections).length > 0 ? "#dcfce7" : connectionStatus === "Tidak terhubung" ? "#fee2e2" : "#fef3c7", 
+                color: Object.keys(connections).length > 0 ? "#166534" : connectionStatus === "Tidak terhubung" ? "#991b1b" : "#92400e",
                 padding: "8px 16px", 
                 borderRadius: "6px", 
                 marginBottom: "16px",
@@ -486,11 +618,11 @@ function App() {
                   {connectionStatus}
                 </span>
                 
-                {isConnected && (
+                {Object.keys(connections).length > 0 && (
                   <button 
-                    onClick={disconnectFromUser}
+                    onClick={showActivePeers}
                     style={{ 
-                      backgroundColor: "#ef4444", 
+                      backgroundColor: "#3b82f6", 
                       color: "white", 
                       padding: "4px 8px", 
                       borderRadius: "4px", 
@@ -499,38 +631,79 @@ function App() {
                       fontSize: "0.875rem"
                     }}
                   >
-                    Putuskan
+                    Lihat Koneksi
                   </button>
                 )}
               </div>
+              
+              {/* Connected Users List */}
+              {connectedUsers.length > 0 && (
+                <div style={{ marginBottom: "16px" }}>
+                  <h3 style={{ fontSize: "1rem", fontWeight: "bold", color: "#4b5563", marginBottom: "8px" }}>User Terhubung ({connectedUsers.length})</h3>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {connectedUsers.map(user => (
+                      <div key={user} style={{ 
+                        backgroundColor: "#f0f9ff", 
+                        borderRadius: "6px", 
+                        padding: "4px 12px", 
+                        display: "flex", 
+                        alignItems: "center", 
+                        justifyContent: "space-between",
+                        gap: "8px"
+                      }}>
+                        <span>{user}</span>
+                        <button
+                          onClick={() => disconnectFromUser(user)}
+                          style={{
+                            backgroundColor: "#ef4444",
+                            color: "white",
+                            width: "20px",
+                            height: "20px",
+                            borderRadius: "50%",
+                            border: "none",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            cursor: "pointer",
+                            fontSize: "0.75rem",
+                            fontWeight: "bold"
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               
               <div style={{ display: "flex", flexDirection: "row", gap: "8px", flexWrap: "wrap" }}>
                 <input
                   placeholder="Username Teman"
                   value={assigneeUsername}
                   onChange={(e) => setAssigneeUsername(e.target.value)}
-                  disabled={isConnected}
+                  disabled={isConnecting}
                   style={{ 
                     flexGrow: 1, 
                     padding: "8px 16px", 
                     border: "1px solid #d1d5db", 
                     borderRadius: "6px", 
                     outline: "none",
-                    backgroundColor: isConnected ? "#f1f5f9" : "white",
-                    cursor: isConnected ? "not-allowed" : "text"
+                    backgroundColor: isConnecting ? "#f1f5f9" : "white",
+                    cursor: isConnecting ? "not-allowed" : "text"
                   }}
                 />
                 <button 
                   onClick={connectToUser}
-                  disabled={isConnected || assigneeUsername.trim() === "" || assigneeUsername === username}
+                  disabled={isConnecting || assigneeUsername.trim() === "" || assigneeUsername === username || connections[assigneeUsername]}
                   style={{ 
-                    backgroundColor: isConnected || assigneeUsername.trim() === "" || assigneeUsername === username ? "#93c5fd" : "#2563eb", 
+                    backgroundColor: isConnecting || assigneeUsername.trim() === "" || assigneeUsername === username || connections[assigneeUsername] ? "#93c5fd" : "#2563eb", 
                     color: "white", 
                     fontWeight: "500", 
                     padding: "8px 16px", 
                     borderRadius: "6px", 
                     border: "none", 
-                    cursor: isConnected || assigneeUsername.trim() === "" || assigneeUsername === username ? "not-allowed" : "pointer", 
+                    cursor: isConnecting || assigneeUsername.trim() === "" || assigneeUsername === username || connections[assigneeUsername] ? "not-allowed" : "pointer", 
                     transition: "background-color 0.3s",
                     display: "flex",
                     alignItems: "center",
@@ -687,8 +860,7 @@ function App() {
                 Kesulitan saat ini: {difficulty}
               </div>
             </div>
-  
-            {/* Control Buttons */}
+            {/* Control Buttons - MODIFIED FOR MULTI-USER */}
             <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)", marginBottom: "24px" }}>
               <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", color: "#1e40af", marginBottom: "16px" }}>Kontrol</h2>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "12px" }}>
@@ -723,20 +895,16 @@ function App() {
                   Reset Blockchain
                 </button>
                 <button
-                  onClick={() => {
-                    if (conn) {
-                      conn.send({ type: "sync-request" });
-                    }
-                  }}
-                  disabled={!isConnected}
+                  onClick={syncWithAllPeers}
+                  disabled={Object.keys(connections).length === 0}
                   style={{ 
-                    backgroundColor: isConnected ? "#2563eb" : "#93c5fd", 
+                    backgroundColor: Object.keys(connections).length > 0 ? "#2563eb" : "#93c5fd", 
                     color: "white", 
                     fontWeight: "500", 
                     padding: "8px 16px", 
                     borderRadius: "6px", 
                     border: "none", 
-                    cursor: isConnected ? "pointer" : "not-allowed", 
+                    cursor: Object.keys(connections).length > 0 ? "pointer" : "not-allowed", 
                     transition: "background-color 0.3s"
                   }}
                 >
@@ -789,7 +957,7 @@ function App() {
                 </button>
               </div>
             </div>
-  
+
             {/* Task List */}
             <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)" }}>
               <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", color: "#1e40af", marginBottom: "16px" }}>Daftar Tugas Blockchain</h2>

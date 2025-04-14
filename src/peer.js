@@ -35,3 +35,37 @@ export const createPeer = (username) => {
     return null;
   }
 };
+
+// You can add additional utilities for peer management here
+export const getPeerConnections = (peer) => {
+  if (!peer) return [];
+  return Object.values(peer.connections).flatMap(conns => conns);
+};
+
+export const connectToPeer = (peer, targetPeerId) => {
+  if (!peer || !targetPeerId) return null;
+  return peer.connect(targetPeerId);
+};
+
+export const disconnectFromPeer = (connection) => {
+  if (!connection) return;
+  try {
+    connection.close();
+  } catch (error) {
+    console.error("Error closing connection:", error);
+  }
+};
+
+export const broadcastToPeers = (connections, data, excludePeerId = null) => {
+  if (!connections || !Array.isArray(connections)) return;
+  
+  connections.forEach(conn => {
+    if (conn.peer !== excludePeerId && conn.open) {
+      try {
+        conn.send(data);
+      } catch (error) {
+        console.error(`Error sending data to ${conn.peer}:`, error);
+      }
+    }
+  });
+};
