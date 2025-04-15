@@ -1,12 +1,32 @@
 import React, { useState, useEffect } from "react";
 import { Blockchain } from "./Blockchain";
 import { createPeer } from "./peer";
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, doc, getDoc, setDoc, query, where, getDocs } from 'firebase/firestore';
+const firebaseConfig = {
+  apiKey: "AIzaSyAR2vQdUlREl_WJZVRYAwXicF651Dr1rQ8",
+  authDomain: "todochain-5d1f3.firebaseapp.com",
+  projectId: "todochain-5d1f3",
+  storageBucket: "todochain-5d1f3.firebasestorage.app",
+  messagingSenderId: "496314167100",
+  appId: "1:496314167100:web:fb3f0c40d92f2d80837839",
+  measurementId: "G-JJF3HCG3PS"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
 function App() {
-  // User & Login States
+  // User & Authentication States
   const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [loginError, setLoginError] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [isRegistering, setIsRegistering] = useState(false);
+  
+  // Database simulation (in a real app, this would be server-side)
+  const [userDatabase, setUserDatabase] = useState({});
 
   // Task & Form States
   const [taskTitle, setTaskTitle] = useState("");
@@ -15,9 +35,9 @@ function App() {
   const [blocks, setBlocks] = useState([]);
   const [chain, setChain] = useState(new Blockchain());
   
-  // P2P Connection States - MODIFIED FOR MULTIPLE CONNECTIONS
+  // P2P Connection States
   const [peer, setPeer] = useState(null);
-  const [connections, setConnections] = useState({}); // Object to store multiple connections
+  const [connections, setConnections] = useState({}); 
   const [connectedUsers, setConnectedUsers] = useState([]);
   const [connectionStatus, setConnectionStatus] = useState("Tidak terhubung");
   const [isConnecting, setIsConnecting] = useState(false);
@@ -27,30 +47,139 @@ function App() {
   const [pendingTask, setPendingTask] = useState(null);
   const [difficulty, setDifficulty] = useState(2);
 
-  // Handle Login
-  const handleLogin = () => {
+  // Save users to localStorage when the database changes
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const usersRef = collection(db, "users");
+        const querySnapshot = await getDocs(usersRef);
+        
+        const users = {};
+        querySnapshot.forEach((doc) => {
+          users[doc.id] = doc.data();
+        });
+        
+        setUserDatabase(users);
+      } catch (error) {
+        console.error("Error fetching users:", error);
+      }
+    };    fetchUsers();
+  }, []);
+
+
+  // Toggle between login and registration forms
+  const toggleAuthMode = () => {
+    setIsRegistering(!isRegistering);
+    setAuthError("");
+    setPassword("");
+    setConfirmPassword("");
+  };
+
+  // Handle Registration
+  const handleRegister = async () => {
+    // Form validation
     if (!username.trim()) {
-      setLoginError("Username tidak boleh kosong");
+      setAuthError("Username tidak boleh kosong");
       return;
     }
-
+    
+    if (!password.trim()) {
+      setAuthError("Password tidak boleh kosong");
+      return;
+    }
+    
+    if (password !== confirmPassword) {
+      setAuthError("Password dan konfirmasi password tidak cocok");
+      return;
+    }
+    
     try {
-      const newPeer = createPeer(username);
+      // Periksa apakah username sudah ada
+      const userRef = doc(db, "users", username);
+      const userSnap = await getDoc(userRef);
       
-      if (!newPeer) {
-        setLoginError("Gagal membuat koneksi peer. Coba username lain.");
+      if (userSnap.exists()) {
+        setAuthError("Username sudah terdaftar");
         return;
       }
       
-      setPeer(newPeer);
-      setIsLoggedIn(true);
-      setLoginError("");
+      // Buat user baru
+      await setDoc(userRef, {
+        password, // Catatan: Dalam aplikasi nyata, password harus di-hash!
+        createdAt: new Date().toISOString()
+      });
       
-      // Set up peer event listeners
-      setupPeerListeners(newPeer);
+      // Update state lokal
+      const updatedUsers = {
+        ...userDatabase,
+        [username]: { password, createdAt: new Date().toISOString() }
+      };
+      setUserDatabase(updatedUsers);
+      
+      setAuthError("");
+      setIsRegistering(false);
+      setPassword("");
+      setConfirmPassword("");
+      
+      alert(`Pendaftaran berhasil! Silakan login dengan username ${username}`);
     } catch (error) {
-      console.error("Login error:", error);
-      setLoginError("Terjadi kesalahan saat login. Coba username lain.");
+      console.error("Error registering user:", error);
+      setAuthError("Terjadi kesalahan saat mendaftar");
+    }
+  };
+
+  // Handle Login
+  const handleLogin = async () => {
+    // Form validation
+    if (!username.trim()) {
+      setAuthError("Username tidak boleh kosong");
+      return;
+    }
+    
+    if (!password.trim()) {
+      setAuthError("Password tidak boleh kosong");
+      return;
+    }
+    
+    try {
+      // Dapatkan data pengguna dari Firestore
+      const userRef = doc(db, "users", username);
+      const userSnap = await getDoc(userRef);
+      
+      if (!userSnap.exists()) {
+        setAuthError("Username tidak ditemukan");
+        return;
+      }
+      
+      const userData = userSnap.data();
+      
+      if (userData.password !== password) {
+        setAuthError("Password salah");
+        return;
+      }
+      
+      // Buat koneksi peer
+      try {
+        const newPeer = createPeer(username);
+        
+        if (!newPeer) {
+          setAuthError("Gagal membuat koneksi peer. Coba username lain.");
+          return;
+        }
+        
+        setPeer(newPeer);
+        setIsLoggedIn(true);
+        setAuthError("");
+        setPassword("");
+        
+        setupPeerListeners(newPeer);
+      } catch (error) {
+        console.error("Login error:", error);
+        setAuthError("Terjadi kesalahan saat login");
+      }
+    } catch (error) {
+      console.error("Error during login:", error);
+      setAuthError("Terjadi kesalahan saat login");
     }
   };
 
@@ -81,7 +210,7 @@ function App() {
     setConnectionStatus("Tidak terhubung");
   };
 
-  // Set up peer event listeners - MODIFIED FOR MULTIPLE CONNECTIONS
+  // Set up peer event listeners
   const setupPeerListeners = (p) => {
     p.on("open", (id) => {
       console.log("Logged in as:", id);
@@ -96,7 +225,7 @@ function App() {
     });
   };
 
-  // Set up connection listeners - NEW FUNCTION TO HANDLE CONNECTION EVENTS
+  // Set up connection listeners
   const setupConnectionListeners = (c) => {
     c.on("open", () => {
       console.log("Peer connected:", c.peer);
@@ -158,7 +287,7 @@ function App() {
     });
   };
 
-  // Helper function to update connection status - NEW FUNCTION
+  // Helper function to update connection status
   const updateConnectionStatus = () => {
     setConnections(prev => {
       const connectedCount = Object.keys(prev).length;
@@ -176,66 +305,64 @@ function App() {
     });
   };
 
-  // Handle incoming data from peers - MODIFIED TO INCLUDE SENDER INFO
-// Updated handleIncomingData function to handle reset messages
-const handleIncomingData = (data, sender) => {
-  if (data.type === "block") {
-    // Handle new task block
-    try {
-      const newBlock = chain.addBlock(data.data);
-      setBlocks([...chain.chain]);
+  // Handle incoming data from peers
+  const handleIncomingData = (data, sender) => {
+    if (data.type === "block") {
+      // Handle new task block
+      try {
+        const newBlock = chain.addBlock(data.data);
+        setBlocks([...chain.chain]);
+        
+        // Forward to other connected peers (except the sender)
+        broadcastToOtherPeers(data, sender);
+      } catch (error) {
+        console.error("Error adding received block:", error);
+      }
+    } else if (data.type === "complete-task") {
+      // Handle task completion
+      try {
+        chain.completeTask(data.blockIndex, data.completedBy);
+        setBlocks([...chain.chain]);
+        
+        // Forward to other connected peers (except the sender)
+        broadcastToOtherPeers(data, sender);
+      } catch (error) {
+        console.error("Error completing task:", error);
+      }
+    } else if (data.type === "sync-request") {
+      // Send blockchain to requesting peer
+      const connection = connections[sender];
+      if (connection) {
+        connection.send({ type: "sync-response", data: chain.chain });
+      }
+    } else if (data.type === "sync-response") {
+      // Validate and update local blockchain if needed
+      if (chain.isValidChain(data.data) && data.data.length > chain.chain.length) {
+        chain.chain = data.data;
+        setBlocks([...chain.chain]);
+      }
+    } else if (data.type === "reset-blockchain") {
+      // Handle blockchain reset request
+      console.log(`Received reset blockchain request from ${sender}`);
       
-      // Forward to other connected peers (except the sender)
-      broadcastToOtherPeers(data, sender);
-    } catch (error) {
-      console.error("Error adding received block:", error);
-    }
-  } else if (data.type === "complete-task") {
-    // Handle task completion
-    try {
-      chain.completeTask(data.blockIndex, data.completedBy);
-      setBlocks([...chain.chain]);
+      // Create new blockchain
+      const newChain = new Blockchain();
       
-      // Forward to other connected peers (except the sender)
+      // Update local state
+      setBlocks([...newChain.chain]);
+      setChain(newChain);
+      setPendingTask(null);
+      
+      // Show notification
+      const resetNotification = `Blockchain direset oleh ${data.initiator} 🔄`;
+      alert(resetNotification);
+      
+      // Forward reset message to other connected peers (except the sender)
       broadcastToOtherPeers(data, sender);
-    } catch (error) {
-      console.error("Error completing task:", error);
     }
-  } else if (data.type === "sync-request") {
-    // Send blockchain to requesting peer
-    const connection = connections[sender];
-    if (connection) {
-      connection.send({ type: "sync-response", data: chain.chain });
-    }
-  } else if (data.type === "sync-response") {
-    // Validate and update local blockchain if needed
-    if (chain.isValidChain(data.data) && data.data.length > chain.chain.length) {
-      chain.chain = data.data;
-      setBlocks([...chain.chain]);
-    }
-  } else if (data.type === "reset-blockchain") {
-    // Handle blockchain reset request
-    console.log(`Received reset blockchain request from ${sender}`);
-    
-    // Create new blockchain
-    const newChain = new Blockchain();
-    
-    // Update local state
-    setBlocks([...newChain.chain]);
-    setChain(newChain);
-    setPendingTask(null);
-    
-    // Show notification
-    const resetNotification = `Blockchain direset oleh ${data.initiator} 🔄`;
-    alert(resetNotification);
-    
-    // Forward reset message to other connected peers (except the sender)
-    // This ensures the reset propagates through the entire network
-    broadcastToOtherPeers(data, sender);
-  }
-};
+  };
 
-  // Broadcast data to all peers except the sender - NEW FUNCTION
+  // Broadcast data to all peers except the sender
   const broadcastToOtherPeers = (data, excludeUser) => {
     Object.entries(connections).forEach(([peerId, connection]) => {
       if (peerId !== excludeUser) {
@@ -248,7 +375,7 @@ const handleIncomingData = (data, sender) => {
     });
   };
 
-  // Connect to a peer by username - MODIFIED FOR MULTIPLE CONNECTIONS
+  // Connect to a peer by username
   const connectToUser = () => {
     if (assigneeUsername.trim() !== "" && assigneeUsername !== username) {
       // Don't connect if already connected
@@ -278,7 +405,7 @@ const handleIncomingData = (data, sender) => {
     }
   };
 
-  // Disconnect from a specific user - NEW FUNCTION
+  // Disconnect from a specific user
   const disconnectFromUser = (userToDisconnect) => {
     const connection = connections[userToDisconnect];
     if (connection) {
@@ -323,7 +450,7 @@ const handleIncomingData = (data, sender) => {
     }
   };
 
-  // Mine a new task block - MODIFIED TO BROADCAST TO ALL PEERS
+  // Mine a new task block
   const mineTaskBlock = () => {
     if (pendingTask) {
       setIsMining(true);
@@ -346,7 +473,7 @@ const handleIncomingData = (data, sender) => {
             targetConnection.send({ type: "block", data: pendingTask });
           }
           
-          // You might also want to broadcast to all other peers for better synchronization
+          // Broadcast to all other peers for better synchronization
           broadcastToOtherPeers({ type: "block", data: pendingTask }, pendingTask.assignedTo);
           
           // Reset pending task
@@ -363,7 +490,7 @@ const handleIncomingData = (data, sender) => {
     }
   };
 
-  // Mark a task as completed - MODIFIED TO BROADCAST TO ALL PEERS
+  // Mark a task as completed
   const completeTask = (blockIndex) => {
     try {
       const block = chain.chain[blockIndex];
@@ -408,7 +535,7 @@ const handleIncomingData = (data, sender) => {
     }
   };
 
-  // Synchronize blockchain with all peers - NEW FUNCTION
+  // Synchronize blockchain with all peers
   const syncWithAllPeers = () => {
     if (Object.keys(connections).length === 0) {
       alert("Tidak ada koneksi peer aktif untuk sinkronisasi");
@@ -427,45 +554,44 @@ const handleIncomingData = (data, sender) => {
   };
 
   // Reset the blockchain
-// Enhanced resetBlockchain function that propagates reset to all connected peers
-const resetBlockchain = () => {
-  // Ask for confirmation before resetting
-  const confirmReset = window.confirm(
-    "Apakah Anda yakin ingin mereset blockchain?\n\nIni akan mereset blockchain untuk semua user yang terhubung."
-  );
+  const resetBlockchain = () => {
+    // Ask for confirmation before resetting
+    const confirmReset = window.confirm(
+      "Apakah Anda yakin ingin mereset blockchain?\n\nIni akan mereset blockchain untuk semua user yang terhubung."
+    );
 
-  if (!confirmReset) {
-    return;
-  }
-
-  // Create new blockchain
-  const newChain = new Blockchain();
-  
-  // Update local state
-  setBlocks([...newChain.chain]);
-  setChain(newChain);
-  setPendingTask(null);
-  
-  // Create reset message to broadcast to all peers
-  const resetMessage = {
-    type: "reset-blockchain",
-    timestamp: new Date().toLocaleString(),
-    initiator: username
-  };
-  
-  // Broadcast reset message to all connected peers
-  Object.values(connections).forEach(connection => {
-    try {
-      connection.send(resetMessage);
-      console.log(`Sent reset request to: ${connection.peer}`);
-    } catch (error) {
-      console.error(`Error sending reset to ${connection.peer}:`, error);
+    if (!confirmReset) {
+      return;
     }
-  });
-  
-  // Show success message
-  alert("Blockchain berhasil direset! 🔄");
-};
+
+    // Create new blockchain
+    const newChain = new Blockchain();
+    
+    // Update local state
+    setBlocks([...newChain.chain]);
+    setChain(newChain);
+    setPendingTask(null);
+    
+    // Create reset message to broadcast to all peers
+    const resetMessage = {
+      type: "reset-blockchain",
+      timestamp: new Date().toLocaleString(),
+      initiator: username
+    };
+    
+    // Broadcast reset message to all connected peers
+    Object.values(connections).forEach(connection => {
+      try {
+        connection.send(resetMessage);
+        console.log(`Sent reset request to: ${connection.peer}`);
+      } catch (error) {
+        console.error(`Error sending reset to ${connection.peer}:`, error);
+      }
+    });
+    
+    // Show success message
+    alert("Blockchain berhasil direset! 🔄");
+  };
 
   // Print blockchain as JSON
   const printJSON = () => {
@@ -488,7 +614,7 @@ const resetBlockchain = () => {
     alert("JSON berhasil diunduh 📦");
   };
 
-  // Show active peer connections - MODIFIED TO SHOW ALL CONNECTIONS
+  // Show active peer connections
   const showActivePeers = () => {
     if (!peer) {
       alert("Peer belum diinisialisasi");
@@ -548,13 +674,15 @@ const resetBlockchain = () => {
 
       <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "24px" }}>
         {!isLoggedIn ? (
-          /* Login Form */
+          /* Authentication Form (Login/Register) */
           <div style={{ backgroundColor: "white", padding: "32px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)", maxWidth: "500px", margin: "80px auto" }}>
-            <h2 style={{ fontSize: "1.5rem", fontWeight: "bold", color: "#1e40af", marginBottom: "24px", textAlign: "center" }}>Login dengan Username</h2>
+            <h2 style={{ fontSize: "1.5rem", fontWeight: "bold", color: "#1e40af", marginBottom: "24px", textAlign: "center" }}>
+              {isRegistering ? "Daftar Akun Baru" : "Login"}
+            </h2>
             
-            {loginError && (
+            {authError && (
               <div style={{ backgroundColor: "#fee2e2", color: "#991b1b", padding: "12px", borderRadius: "6px", marginBottom: "16px" }}>
-                {loginError}
+                {authError}
               </div>
             )}
             
@@ -564,7 +692,7 @@ const resetBlockchain = () => {
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Masukkan username Anda"
+                placeholder="Masukkan username"
                 style={{ 
                   width: "100%", 
                   padding: "12px 16px", 
@@ -576,29 +704,85 @@ const resetBlockchain = () => {
               />
             </div>
             
+            <div style={{ marginBottom: isRegistering ? "24px" : "32px" }}>
+              <label style={{ display: "block", marginBottom: "8px", fontWeight: "500", color: "#4b5563" }}>Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Masukkan password"
+                style={{ 
+                  width: "100%", 
+                  padding: "12px 16px", 
+                  border: "1px solid #d1d5db", 
+                  borderRadius: "6px", 
+                  outline: "none",
+                  fontSize: "1rem"
+                }}
+              />
+            </div>
+            
+            {isRegistering && (
+              <div style={{ marginBottom: "32px" }}>
+                <label style={{ display: "block", marginBottom: "8px", fontWeight: "500", color: "#4b5563" }}>Konfirmasi Password</label>
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Masukkan ulang password"
+                  style={{ 
+                    width: "100%", 
+                    padding: "12px 16px", 
+                    border: "1px solid #d1d5db", 
+                    borderRadius: "6px", 
+                    outline: "none",
+                    fontSize: "1rem"
+                  }}
+                />
+              </div>
+            )}
+            
             <button 
-              onClick={handleLogin}
-              disabled={!username.trim()}
+              onClick={isRegistering ? handleRegister : handleLogin}
+              disabled={!username.trim() || !password.trim() || (isRegistering && password !== confirmPassword)}
               style={{ 
-                backgroundColor: username.trim() ? "#2563eb" : "#93c5fd", 
+                backgroundColor: username.trim() && password.trim() && (!isRegistering || password === confirmPassword) ? "#2563eb" : "#93c5fd", 
                 color: "white", 
                 fontWeight: "500", 
                 padding: "12px 24px", 
                 borderRadius: "6px", 
                 border: "none", 
-                cursor: username.trim() ? "pointer" : "not-allowed", 
+                cursor: username.trim() && password.trim() && (!isRegistering || password === confirmPassword) ? "pointer" : "not-allowed", 
                 transition: "background-color 0.3s",
                 width: "100%",
-                fontSize: "1rem"
+                fontSize: "1rem",
+                marginBottom: "16px"
               }}
             >
-              Login
+              {isRegistering ? "Daftar" : "Login"}
             </button>
+            
+            <p style={{ textAlign: "center", color: "#4b5563", fontSize: "0.875rem" }}>
+              {isRegistering ? "Sudah punya akun? " : "Belum punya akun? "}
+              <button 
+                onClick={toggleAuthMode}
+                style={{ 
+                  background: "none", 
+                  border: "none", 
+                  color: "#2563eb", 
+                  cursor: "pointer", 
+                  fontWeight: "500",
+                  padding: "0"
+                }}
+              >
+                {isRegistering ? "Login" : "Daftar sekarang"}
+              </button>
+            </p>
           </div>
         ) : (
           /* Main Application (after login) */
           <>
-            {/* Connection Section - MODIFIED TO SHOW AND MANAGE MULTIPLE CONNECTIONS */}
+            {/* Connection Section */}
             <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)", marginBottom: "24px" }}>
               <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", color: "#1e40af", marginBottom: "16px" }}>Koneksi User</h2>
               

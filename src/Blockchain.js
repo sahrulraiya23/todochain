@@ -123,8 +123,10 @@ export class Blockchain {
       return false;
     }
     
-    // Check if the first block is the genesis block
-    if (JSON.stringify(chainToValidate[0]) !== JSON.stringify(this.createGenesisBlock())) {
+    // PERBAIKAN: Jangan melakukan perbandingan langsung dengan blok genesis baru
+    // Cukup periksa apakah ini blok dengan index 0
+    const genesisBlock = chainToValidate[0];
+    if (genesisBlock.index !== 0 || genesisBlock.previousHash !== "0") {
       return false;
     }
     
@@ -133,13 +135,23 @@ export class Blockchain {
       const currentBlock = chainToValidate[i];
       const previousBlock = chainToValidate[i - 1];
       
-      // Verify hash is correct
-      if (currentBlock.hash !== currentBlock.calculateHash()) {
+      // Verifikasi bahwa hash sudah benar
+      const recalculatedHash = SHA256(
+        currentBlock.index + 
+        currentBlock.timestamp + 
+        JSON.stringify(currentBlock.data) + 
+        currentBlock.previousHash + 
+        currentBlock.nonce
+      ).toString();
+      
+      if (currentBlock.hash !== recalculatedHash) {
+        console.log('Hash tidak valid pada blok', i);
         return false;
       }
       
-      // Verify previous hash reference
+      // Verifikasi referensi hash sebelumnya
       if (currentBlock.previousHash !== previousBlock.hash) {
+        console.log('Previous hash tidak valid pada blok', i);
         return false;
       }
     }
