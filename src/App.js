@@ -1,8 +1,21 @@
 import React, { useState, useEffect } from "react";
 import { Blockchain } from "./Blockchain";
 import { createPeer } from "./peer";
-import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, doc, getDoc, setDoc, query, where, getDocs } from 'firebase/firestore';
+import { initializeApp } from 'firebase/app'; // Using the newer Firebase v9+ SDK
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  query, 
+  where, 
+  getDocs,
+  orderBy,
+  writeBatch
+} from 'firebase/firestore';
+
+// Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyAR2vQdUlREl_WJZVRYAwXicF651Dr1rQ8",
   authDomain: "todochain-5d1f3.firebaseapp.com",
@@ -13,8 +26,12 @@ const firebaseConfig = {
   measurementId: "G-JJF3HCG3PS"
 };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+// Initialize Firebase
+const app = initializeApp(firebaseConfig); // Correct way to initialize Firebase in v9+
+const db = getFirestore(app); // Get Firestore instance using the modular approach
+
+// Now you can use Firestore and other Firebase services as usual
+
 
 function App() {
   // User & Authentication States
@@ -44,28 +61,170 @@ function App() {
   
   // Mining States
   const [isMining, setIsMining] = useState(false);
-  const [pendingTask, setPendingTask] = useState(null);
+  const [pendingTask, setPendingTask] = useState([]); 
   const [difficulty, setDifficulty] = useState(2);
 
-  // Save users to localStorage when the database changes
-  useEffect(() => {
-    const fetchUsers = async () => {
-      try {
-        const usersRef = collection(db, "users");
-        const querySnapshot = await getDocs(usersRef);
-        
-        const users = {};
-        querySnapshot.forEach((doc) => {
-          users[doc.id] = doc.data();
-        });
-        
-        setUserDatabase(users);
-      } catch (error) {
-        console.error("Error fetching users:", error);
-      }
-    };    fetchUsers();
-  }, []);
+  // Functions moved inside the component to access state
+  const saveBlockToFirestore = async (block) => {
+    try {
+      // Menggunakan block.index sebagai ID dokumen
+      const blockRef = doc(db, "blocks", block.index.toString());
+      
+      // Memastikan data yang akan disimpan kompatibel dengan Firestore
+      const firestoreCompatibleBlock = {
+        index: block.index,
+        timestamp: block.timestamp,
+        data: {
+          title: block.data.title,
+          description: block.data.description,
+          assignedBy: block.data.assignedBy,
+          assignedTo: block.data.assignedTo,
+          isCompleted: block.data.isCompleted,
+          completedAt: block.data.completedAt || null
+        },
+        hash: block.hash,
+        previousHash: block.previousHash,
+        nonce: block.nonce
+      };
+      
+      await setDoc(blockRef, firestoreCompatibleBlock);
+      console.log(`Block #${block.index} saved to Firestore`);
+    } catch (error) {
+      console.error("Error saving block to Firestore:", error, block);
+      // Tambahkan alert untuk memberi tahu pengguna
+      alert(`Error menyimpan block #${block.index} ke Firestore: ${error.message}`);
+    }
+  };
 
+  const saveChainToFirestore = async (blockchain) => {
+    try {
+      // Menyimpan metadata blockchain
+      const chainMetaRef = doc(db, "blockchain", "metadata");
+      await setDoc(chainMetaRef, {
+        lastUpdated: new Date().toISOString(),
+        length: blockchain.length,
+        difficulty: difficulty
+      });
+      
+      // Menyimpan setiap blok
+      for (const block of blockchain) {
+        await saveBlockToFirestore(block);
+      }
+      
+      console.log("Full blockchain saved to Firestore");
+    } catch (error) {
+      console.error("Error saving blockchain to Firestore:", error);
+    }
+  };
+  const updateBlockchainMetadata = async () => {
+    try {
+      // Menyimpan metadata blockchain
+      const chainMetaRef = doc(db, "blockchain", "metadata");
+      await setDoc(chainMetaRef, {
+        lastUpdated: new Date().toISOString(),
+        length: chain.chain.length,
+        difficulty: difficulty
+      });
+      console.log("Blockchain metadata updated in Firestore");
+    } catch (error) {
+      console.error("Error updating blockchain metadata:", error);
+    }
+  };
+
+  const loadBlockchainFromFirestore = async () => {
+    try {
+      // Periksa metadata blockchain terlebih dahulu
+      const chainMetaRef = doc(db, "blockchain", "metadata");
+      const chainMetaSnap = await getDoc(chainMetaRef);
+      
+      if (!chainMetaSnap.exists()) {
+        console.log("No blockchain found in Firestore");
+        return null;
+      }
+      
+      const metadata = chainMetaSnap.data();
+      console.log(`Found blockchain with ${metadata.length} blocks`);
+      
+      // Ambil semua blok dari Firestore
+      const blocksRef = collection(db, "blocks");
+      const blocksQuery = query(blocksRef, orderBy("index"));
+      const blocksSnap = await getDocs(blocksQuery);
+      
+      if (blocksSnap.empty) {
+        console.log("No blocks found in Firestore");
+        return null;
+      }
+      
+      // Buat array dari blok-blok
+      const loadedBlocks = [];
+      blocksSnap.forEach((doc) => {
+        loadedBlocks.push(doc.data());
+      });
+      
+      console.log(`Loaded ${loadedBlocks.length} blocks from Firestore`);
+      return loadedBlocks;
+    } catch (error) {
+      console.error("Error loading blockchain from Firestore:", error);
+      return null;
+    }
+  };
+
+  const syncBlockchain = async () => {
+    // Pertama, coba ambil dari Firestore
+    try {
+      const loadedBlocks = await loadBlockchainFromFirestore();
+      
+      if (loadedBlocks && loadedBlocks.length > 0) {
+        // Validasi chain yang dimuat
+        const tempChain = new Blockchain();
+        tempChain.chain = loadedBlocks;
+        
+        if (tempChain.isValidChain(loadedBlocks)) {
+          const currentLength = chain.chain.length;
+          const loadedLength = loadedBlocks.length;
+          
+          // Hanya gunakan chain dari Firestore jika lebih panjang
+          if (loadedLength > currentLength) {
+            setChain(tempChain);
+            setBlocks([...tempChain.chain]);
+            setDifficulty(tempChain.difficulty);
+            console.log(`Updated local chain from Firestore (${currentLength} → ${loadedLength} blocks)`);
+          }
+        }
+      }
+      
+      // Kemudian, minta sinkronisasi dari peer
+      if (Object.keys(connections).length > 0) {
+        Object.values(connections).forEach(connection => {
+          try {
+            connection.send({ type: "sync-request" });
+          } catch (error) {
+            console.error(`Error requesting sync from peer ${connection.peer}:`, error);
+          }
+        });
+      }
+      
+    } catch (error) {
+      console.error("Error during blockchain sync:", error);
+    }
+  };
+
+  // Save users to localStorage when the database changes
+// Tambahkan ini di useEffect pada saat komponen dimuat
+useEffect(() => {
+  const verifyFirestoreConnection = async () => {
+    try {
+      const testDocRef = doc(db, "connection_test", "test");
+      await setDoc(testDocRef, { timestamp: new Date().toISOString() });
+      console.log("Firestore connection verified successfully");
+    } catch (error) {
+      console.error("Error connecting to Firestore:", error);
+      alert("Terjadi masalah koneksi ke database. Silakan periksa konsol untuk detail.");
+    }
+  };
+  
+  verifyFirestoreConnection();
+}, []);
 
   // Toggle between login and registration forms
   const toggleAuthMode = () => {
@@ -306,30 +465,37 @@ function App() {
   };
 
   // Handle incoming data from peers
-  const handleIncomingData = (data, sender) => {
+  const handleIncomingData = async (data, sender) => {
     if (data.type === "block") {
       // Handle new task block
       try {
         const newBlock = chain.addBlock(data.data);
         setBlocks([...chain.chain]);
         
+        // Save new block to Firestore
+        await saveBlockToFirestore(newBlock);
+        
         // Forward to other connected peers (except the sender)
         broadcastToOtherPeers(data, sender);
       } catch (error) {
         console.error("Error adding received block:", error);
       }
-    } else if (data.type === "complete-task") {
+    } // Inside handleIncomingData function
+    else if (data.type === "complete-task") {
       // Handle task completion
       try {
-        chain.completeTask(data.blockIndex, data.completedBy);
+        const updatedBlock = chain.completeTask(data.blockIndex, data.completedBy);
         setBlocks([...chain.chain]);
+        
+        // Save updated block to Firestore
+        await saveBlockToFirestore(updatedBlock);
         
         // Forward to other connected peers (except the sender)
         broadcastToOtherPeers(data, sender);
       } catch (error) {
         console.error("Error completing task:", error);
       }
-    } else if (data.type === "sync-request") {
+    }else if (data.type === "sync-request") {
       // Send blockchain to requesting peer
       const connection = connections[sender];
       if (connection) {
@@ -340,6 +506,9 @@ function App() {
       if (chain.isValidChain(data.data) && data.data.length > chain.chain.length) {
         chain.chain = data.data;
         setBlocks([...chain.chain]);
+        
+        // Save updated blockchain to Firestore
+        await saveChainToFirestore(chain.chain);
       }
     } else if (data.type === "reset-blockchain") {
       // Handle blockchain reset request
@@ -352,6 +521,13 @@ function App() {
       setBlocks([...newChain.chain]);
       setChain(newChain);
       setPendingTask(null);
+      
+      // Reset blockchain di Firestore
+      try {
+        await saveChainToFirestore(newChain.chain);
+      } catch (error) {
+        console.error("Error saving reset blockchain to Firestore:", error);
+      }
       
       // Show notification
       const resetNotification = `Blockchain direset oleh ${data.initiator} 🔄`;
@@ -442,9 +618,16 @@ function App() {
         completedAt: null
       };
       
-      setPendingTask(newTask);
+      // Add the new task to the queue instead of replacing
+      setPendingTask
+      (prevTasks => [...prevTasks, newTask]);
+      
+      // Clear input fields
       setTaskTitle("");
       setTaskDescription("");
+      
+      // Optional: Show a confirmation message
+      alert(`Tugas "${taskTitle}" ditambahkan ke antrian mining`);
     } else {
       alert("Judul tugas dan username penerima tugas harus diisi");
     }
@@ -452,10 +635,13 @@ function App() {
 
   // Mine a new task block
   const mineTaskBlock = () => {
-    if (pendingTask) {
+    if (pendingTask.length > 0) {
       setIsMining(true);
       
-      setTimeout(() => {
+      // Get the first task from the queue
+      const taskToMine = pendingTask[0];
+      
+      setTimeout(async () => {
         try {
           // Adjust difficulty if needed
           if (chain.chain.length > 1) {
@@ -464,20 +650,26 @@ function App() {
           }
           
           // Add block (mining happens here)
-          const newBlock = chain.addBlock(pendingTask);
+          const newBlock = chain.addBlock(taskToMine);
           setBlocks([...chain.chain]);
           
+          // Save the new block to Firestore
+          await saveBlockToFirestore(newBlock);
+          
           // Send to the specific peer if this is a task for them
-          const targetConnection = connections[pendingTask.assignedTo];
+          const targetConnection = connections[taskToMine.assignedTo];
           if (targetConnection) {
-            targetConnection.send({ type: "block", data: pendingTask });
+            targetConnection.send({ type: "block", data: taskToMine });
           }
           
           // Broadcast to all other peers for better synchronization
-          broadcastToOtherPeers({ type: "block", data: pendingTask }, pendingTask.assignedTo);
+          broadcastToOtherPeers({ type: "block", data: taskToMine }, taskToMine.assignedTo);
           
-          // Reset pending task
-          setPendingTask(null);
+          // Remove the first task from the queue
+          setPendingTask(prevTasks => prevTasks.slice(1));
+          
+          // Show success message
+          alert(`Tugas "${taskToMine.title}" berhasil di-mining!`);
         } catch (error) {
           console.error("Mining error:", error);
           alert("Terjadi kesalahan saat mining blok");
@@ -489,9 +681,16 @@ function App() {
       alert("Tidak ada tugas yang menunggu untuk di-mining");
     }
   };
-
+  
+  const removeTaskFromQueue = (index) => {
+    setPendingTask(prevTasks => {
+      const newTasks = [...prevTasks];
+      newTasks.splice(index, 1);
+      return newTasks;
+    });
+  };
   // Mark a task as completed
-  const completeTask = (blockIndex) => {
+  const completeTask = async (blockIndex) => {
     try {
       const block = chain.chain[blockIndex];
       
@@ -507,9 +706,12 @@ function App() {
         return;
       }
       
-      // Mark task as completed
-      const completionBlock = chain.completeTask(blockIndex, username);
+      // Mark task as completed (updates the existing block)
+      const updatedBlock = chain.completeTask(blockIndex, username);
       setBlocks([...chain.chain]);
+      
+      // Save the updated block to Firestore
+      await saveBlockToFirestore(updatedBlock);
       
       // Send update to the task creator if connected
       const creatorConnection = connections[block.data.assignedBy];
@@ -536,34 +738,43 @@ function App() {
   };
 
   // Synchronize blockchain with all peers
-  const syncWithAllPeers = () => {
-    if (Object.keys(connections).length === 0) {
-      alert("Tidak ada koneksi peer aktif untuk sinkronisasi");
-      return;
-    }
-    
-    Object.values(connections).forEach(connection => {
-      try {
-        connection.send({ type: "sync-request" });
-      } catch (error) {
-        console.error(`Error syncing with peer ${connection.peer}:`, error);
+  const syncWithAllPeers = async () => {
+    try {
+      // Cek Firestore dulu
+      await syncBlockchain();
+      
+      // Kemudian peer
+      if (Object.keys(connections).length === 0) {
+        alert("Sinkronisasi dengan Firestore selesai, tapi tidak ada koneksi peer aktif untuk sinkronisasi P2P");
+        return;
       }
-    });
-    
-    alert("Permintaan sinkronisasi dikirim ke semua peers");
+      
+      Object.values(connections).forEach(connection => {
+        try {
+          connection.send({ type: "sync-request" });
+        } catch (error) {
+          console.error(`Error syncing with peer ${connection.peer}:`, error);
+        }
+      });
+      
+      alert("Permintaan sinkronisasi dikirim ke Firestore dan semua peers");
+    } catch (error) {
+      console.error("Error during sync operation:", error);
+      alert("Terjadi kesalahan saat sinkronisasi");
+    }
   };
-
+  
   // Reset the blockchain
-  const resetBlockchain = () => {
+  const resetBlockchain = async () => {
     // Ask for confirmation before resetting
     const confirmReset = window.confirm(
       "Apakah Anda yakin ingin mereset blockchain?\n\nIni akan mereset blockchain untuk semua user yang terhubung."
     );
-
+  
     if (!confirmReset) {
       return;
     }
-
+  
     // Create new blockchain
     const newChain = new Blockchain();
     
@@ -571,6 +782,35 @@ function App() {
     setBlocks([...newChain.chain]);
     setChain(newChain);
     setPendingTask(null);
+    
+    // Reset blockchain di Firestore
+    try {
+      // Hapus semua blok yang ada
+      const blocksRef = collection(db, "blocks");
+      const blocksSnap = await getDocs(blocksRef);
+      
+      // Batch delete untuk efisiensi
+      const batch = writeBatch(db);
+      blocksSnap.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+      
+      // Simpan blok genesis baru
+      await saveBlockToFirestore(newChain.chain[0]);
+      
+      // Update metadata
+      const chainMetaRef = doc(db, "blockchain", "metadata");
+      await setDoc(chainMetaRef, {
+        lastUpdated: new Date().toISOString(),
+        length: 1,
+        difficulty: newChain.difficulty
+      });
+      
+      console.log("Blockchain reset in Firestore");
+    } catch (error) {
+      console.error("Error resetting blockchain in Firestore:", error);
+    }
     
     // Create reset message to broadcast to all peers
     const resetMessage = {
@@ -592,7 +832,7 @@ function App() {
     // Show success message
     alert("Blockchain berhasil direset! 🔄");
   };
-
+  
   // Print blockchain as JSON
   const printJSON = () => {
     const jsonData = JSON.stringify(chain.chain, null, 2);
@@ -639,6 +879,8 @@ function App() {
   useEffect(() => {
     setBlocks([...chain.chain]);
   }, []);
+  
+
   
   return (
     <div style={{ minHeight: "100vh", background: "linear-gradient(to bottom, #ebf5ff, #e1efff)" }}>
@@ -980,70 +1222,110 @@ function App() {
               </button>
             </div>
 
-            {/* Pending Task & Mining Section */}
-            <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)", marginBottom: "24px" }}>
-              <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", color: "#1e40af", marginBottom: "16px" }}>Tugas Tertunda & Mining</h2>
-              
-              {pendingTask ? (
-                <div style={{ border: "1px solid #e5e7eb", borderRadius: "8px", padding: "16px", marginBottom: "16px" }}>
-                  <h3 style={{ fontSize: "1rem", fontWeight: "500", color: "#4b5563", marginBottom: "8px" }}>Tugas yang menunggu untuk di-mining:</h3>
-                  <div style={{ padding: "12px", backgroundColor: "#f3f4f6", borderRadius: "6px", fontWeight: "500" }}>
-                    <div style={{ marginBottom: "8px" }}><span style={{ fontWeight: "600" }}>Judul:</span> {pendingTask.title}</div>
-                    {pendingTask.description && (
-                      <div style={{ marginBottom: "8px" }}><span style={{ fontWeight: "600" }}>Deskripsi:</span> {pendingTask.description}</div>
-                    )}
-                    <div style={{ marginBottom: "8px" }}><span style={{ fontWeight: "600" }}>Dari:</span> {pendingTask.assignedBy}</div>
-                    <div><span style={{ fontWeight: "600" }}>Untuk:</span> {pendingTask.assignedTo}</div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ padding: "16px", textAlign: "center", color: "#6b7280", marginBottom: "16px" }}>
-                  Tidak ada tugas yang menunggu untuk di-mining
-                </div>
-              )}
-              
-              <button 
-                onClick={mineTaskBlock}
-                disabled={!pendingTask || isMining}
-                style={{ 
-                  backgroundColor: pendingTask && !isMining ? "#ef4444" : "#f1f5f9", 
-                  color: pendingTask && !isMining ? "white" : "#94a3b8",
-                  fontWeight: "500", 
-                  padding: "12px 24px", 
-                  borderRadius: "6px", 
-                  border: "none", 
-                  width: "100%",
-                  cursor: pendingTask && !isMining ? "pointer" : "not-allowed", 
-                  transition: "all 0.3s",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center"
-                }}
-              >
-                {isMining ? (
-                  <>
-                    <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" style={{ height: "24px", width: "24px", marginRight: "8px" }} viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    Mining...
-                  </>
-                ) : (
-                  <>
-                    <svg xmlns="http://www.w3.org/2000/svg" style={{ height: "24px", width: "24px", marginRight: "8px" }} viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
-                    </svg>
-                    Mulai Mining
-                  </>
-                )}
-              </button>
-              <div style={{ marginTop: "12px", fontSize: "0.875rem", color: "#6b7280", display: "flex", alignItems: "center" }}>
-                <svg xmlns="http://www.w3.org/2000/svg" style={{ height: "16px", width: "16px", marginRight: "4px" }} viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2h-1V9a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-                Kesulitan saat ini: {difficulty}
+            
+  <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)", marginBottom: "24px" }}>
+    <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", color: "#1e40af", marginBottom: "16px" }}>
+      Tugas Tertunda & Mining ({pendingTask.length})
+    </h2>
+    
+    {pendingTask.length > 0 ? (
+      <div>
+        {pendingTask.map((task, index) => (
+          <div 
+            key={index} 
+            style={{ 
+              border: "1px solid #e5e7eb", 
+              borderRadius: "8px", 
+              padding: "16px", 
+              marginBottom: index < pendingTask.length - 1 ? "16px" : "0",
+              backgroundColor: index === 0 ? "#f0f9ff" : "#f9fafb" // Highlight the next task to be mined
+            }}
+          >
+            {index === 0 && (
+              <div style={{ marginBottom: "8px", backgroundColor: "#dbeafe", color: "#1e40af", fontWeight: "500", padding: "4px 8px", borderRadius: "4px", display: "inline-block", fontSize: "0.875rem" }}>
+                Berikutnya untuk di-mining
               </div>
-            </div>
+            )}
+            <div style={{ fontWeight: "500", marginBottom: "8px" }}><span style={{ fontWeight: "600" }}>Judul:</span> {task.title}</div>
+            {task.description && (
+              <div style={{ marginBottom: "8px" }}><span style={{ fontWeight: "600" }}>Deskripsi:</span> {task.description}</div>
+            )}
+            <div style={{ marginBottom: "8px" }}><span style={{ fontWeight: "600" }}>Dari:</span> {task.assignedBy}</div>
+            <div><span style={{ fontWeight: "600" }}>Untuk:</span> {task.assignedTo}</div>
+            
+            {/* Add a remove button for each task */}
+            <button
+              onClick={() => removeTaskFromQueue(index)}
+              style={{ 
+                marginTop: "12px", 
+                backgroundColor: "#ef4444", 
+                color: "white", 
+                padding: "4px 8px", 
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: "pointer", 
+                fontSize: "0.875rem",
+                display: "flex",
+                alignItems: "center"
+              }}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" style={{ height: "16px", width: "16px", marginRight: "4px" }} viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              Hapus
+            </button>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <div style={{ padding: "16px", textAlign: "center", color: "#6b7280", marginBottom: "16px" }}>
+        Tidak ada tugas yang menunggu untuk di-mining
+      </div>
+    )}
+    
+    <button 
+      onClick={mineTaskBlock}
+      disabled={pendingTask.length === 0 || isMining}
+      style={{ 
+        backgroundColor: pendingTask.length > 0 && !isMining ? "#ef4444" : "#f1f5f9", 
+        color: pendingTask.length > 0 && !isMining ? "white" : "#94a3b8",
+        fontWeight: "500", 
+        padding: "12px 24px", 
+        borderRadius: "6px", 
+        border: "none", 
+        width: "100%",
+        cursor: pendingTask.length > 0 && !isMining ? "pointer" : "not-allowed", 
+        transition: "all 0.3s",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
+      }}
+    >
+      {isMining ? (
+        <>
+          <svg className="animate-spin" xmlns="http://www.w3.org/2000/svg" style={{ height: "24px", width: "24px", marginRight: "8px" }} viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          Mining...
+        </>
+      ) : (
+        <>
+          <svg xmlns="http://www.w3.org/2000/svg" style={{ height: "24px", width: "24px", marginRight: "8px" }} viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
+          </svg>
+          Mulai Mining
+        </>
+      )}
+    </button>
+    <div style={{ marginTop: "12px", fontSize: "0.875rem", color: "#6b7280", display: "flex", alignItems: "center" }}>
+      <svg xmlns="http://www.w3.org/2000/svg" style={{ height: "16px", width: "16px", marginRight: "4px" }} viewBox="0 0 20 20" fill="currentColor">
+        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2h-1V9a1 1 0 00-1-1z" clipRule="evenodd" />
+      </svg>
+      Kesulitan saat ini: {difficulty}
+    </div>
+  </div>
+
             {/* Control Buttons - MODIFIED FOR MULTI-USER */}
             <div style={{ backgroundColor: "white", padding: "24px", borderRadius: "8px", boxShadow: "0px 2px 4px rgba(0, 0, 0, 0.1)", marginBottom: "24px" }}>
               <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", color: "#1e40af", marginBottom: "16px" }}>Kontrol</h2>

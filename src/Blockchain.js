@@ -85,38 +85,25 @@ export class Blockchain {
 
   // Mark a task as completed
   completeTask(blockIndex, completedBy) {
-    if (blockIndex <= 0 || blockIndex >= this.chain.length) {
-      throw new Error("Invalid block index");
+    // Find the block to update
+    const taskBlock = this.chain[blockIndex];
+    
+    // Update the task status
+    taskBlock.data.isCompleted = true;
+    taskBlock.data.completedAt = new Date().toLocaleString();
+    
+    // Recalculate the hash for this block
+    taskBlock.hash = taskBlock.calculateHash();
+    
+    // Since we changed this block's hash, we need to update all subsequent blocks
+    // to maintain chain integrity
+    for (let i = blockIndex + 1; i < this.chain.length; i++) {
+      this.chain[i].previousHash = this.chain[i - 1].hash;
+      this.chain[i].hash = this.chain[i].calculateHash();
     }
     
-    const block = this.chain[blockIndex];
-    
-    // Only allow the assigned person to complete the task
-    if (completedBy !== block.data.assignedTo) {
-      throw new Error("Only the assigned person can complete this task");
-    }
-    
-    // Update task data
-    const updatedData = {
-      ...block.data,
-      isCompleted: true,
-      completedAt: new Date().toLocaleString()
-    };
-    
-    // Create a new block for the completed task status
-    const completionBlock = new Block(
-      this.chain.length,
-      new Date().toLocaleString(),
-      updatedData,
-      this.getLatestBlock().hash
-    );
-    
-    completionBlock.mineBlock(this.difficulty);
-    this.chain.push(completionBlock);
-    
-    return completionBlock;
+    return taskBlock;
   }
-
   // Verify the integrity of the blockchain
   isValidChain(chainToValidate) {
     if (!chainToValidate || chainToValidate.length === 0) {
